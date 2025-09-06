@@ -1,0 +1,16 @@
+.q-card {
+  max-height: calc(80vh - var(--header-height));
+  width: 80vw;
+  padding: 3vh 3vw;
+  border-radius: 15px;
+
+  /* top, transparent black, faked with gradient */
+  background: linear-gradient(
+      rgba(255, 255, 255, 0.3),
+      rgba(255, 255, 255, 0.3)
+  );
+}
+
+.q-card__action {
+  height: var(--card-actions-height);
+}

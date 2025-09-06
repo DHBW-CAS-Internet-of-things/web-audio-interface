@@ -1,0 +1,11 @@
+{
+  "app.title": "Audio Interface",
+  "app.institution": "DHBW CAS",
+
+  "audio-component.start": "Start",
+  "audio-component.stop": "Stop",
+  "audio-component.recording": "Läuft,…",
+  "audio-component.sent": " • gesendet: ",
+  "audio-component.queue": " • Warteschlange: ",
+  "audio-component.error": "Upload fehlgeschlagen"
+}

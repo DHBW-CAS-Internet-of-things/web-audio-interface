@@ -1,0 +1,22 @@
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 400;
+  line-height: 2rem;
+  letter-spacing: normal;
+
+  width: 100%;
+  max-height: var(--page-title-height);
+  height: var(--page-title-height);
+  min-height: var(--page-title-height);
+
+  padding: 0 0 16px;
+}
+
+.search-bar {
+  width: 100%;
+  max-height: var(--search-bar-height);
+  height: var(--search-bar-height);
+  min-height: var(--search-bar-height);
+
+  padding: 0 0 16px;
+}
