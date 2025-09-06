@@ -1,215 +1,178 @@
 <template>
   <q-card class="q-pa-md">
     <div class="row items-center q-gutter-sm q-mb-sm">
-      <q-btn :disable="isRunning" color="primary" icon="mic" :label="$t('audio-component.start')" @click="start"
-             no-caps/>
-      <q-btn :disable="!isRunning" color="negative" icon="stop" :label="$t('audio-component.stop')" @click="stop"
-             no-caps/>
+      <q-btn
+        :disable="isRunning"
+        color="primary"
+        icon="mic"
+        :label="$t('audio-component.start')"
+        @click="start"
+        no-caps
+      />
+      <q-btn
+        :disable="!isRunning"
+        color="negative"
+        icon="stop"
+        :label="$t('audio-component.stop')"
+        @click="stop"
+        no-caps
+      />
     </div>
 
     <q-banner v-if="isRunning" class="bg-grey-2 q-mb-sm" dense>
-      {{ $t('audio-component.recording') }}{{ elapsedLabel }}{{ $t('audio-component.sent') }}{{
-        sent
-      }}{{ $t('audio-component.queue') }}{{ queue.length }}
+      {{ $t('audio-component.recording') }}{{ elapsedLabel }}{{ $t('audio-component.sent')
+      }}{{ sent }}
     </q-banner>
     <q-banner v-if="status" class="bg-grey-2 q-mb-sm" dense>{{ status }}</q-banner>
     <q-banner v-if="error" class="bg-red-2 text-negative q-mb-sm" dense>{{ error }}</q-banner>
+    <q-banner v-if="lastResult" class="bg-grey-2 q-mb-sm" dense>
+      t={{ lastResult.t.toFixed(1) }}s · p_clap={{ lastResult.p_clap.toFixed(3) }} · p_noise={{
+        lastResult.p_noise.toFixed(3)
+      }}
+    </q-banner>
   </q-card>
 </template>
 
 <script setup lang="ts">
-import {computed, ref} from 'vue'
-import {useI18n} from "vue-i18n";
+import { computed, ref } from 'vue';
 
-/** UI */
-const isRunning = ref(false)
-const status = ref('')
-const error = ref('')
-const sent = ref(0)
-const startTs = ref<number | null>(null)
-const elapsed = ref(0)
-let tick: number | null = null
+const isRunning = ref(false);
+const status = ref('');
+const error = ref('');
+const sent = ref(0);
+const startTs = ref<number | null>(null);
+const elapsed = ref(0);
+let tick: number | null = null;
 const elapsedLabel = computed(() => {
-  const s = Math.floor(elapsed.value / 1000)
-  const mm = String(Math.floor(s / 60)).padStart(2, '0')
-  const ss = String(s % 60).padStart(2, '0')
-  return `${mm}:${ss}`
-})
+  const s = Math.floor(elapsed.value / 1000);
+  const mm = String(Math.floor(s / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+});
 
-/** Config */
-const TARGET_SR = 16000
-const CHANNELS = 1
-const SAMPLES_PER_BLOCK = TARGET_SR * 1 // 1 s
-const BYTES_PER_SAMPLE = 2
-const UPLOAD_URL = 'https://localhost:8000/predict/frequency'
+const TARGET_SR = 16000;
+const SAMPLES_PER_BLOCK = TARGET_SR * 1; // 1 s
+const WS_URL = 'ws://localhost:8000/ws/stream';
 
-/** Audio handles */
-let stream: MediaStream | null = null
-let audioCtx: AudioContext | null = null
-let workletNode: AudioWorkletNode | null = null
+let stream: MediaStream | null = null;
+let audioCtx: AudioContext | null = null;
+let workletNode: AudioWorkletNode | null = null;
+let ws: WebSocket | null = null;
 
-/** Upload queue */
-type Item = { seq: number; wav: Blob; filename: string; createdAt: number }
-const queue = ref<Item[]>([])
-let seq = 0
-let inFlight = 0
-const CONCURRENCY = 2
-const MAX_RETRY = 3
+const lastResult = ref<{ t: number; p_clap: number; p_noise: number } | null>(null);
 
 async function start() {
   error.value = '';
-  status.value = ''
+  status.value = '';
+  lastResult.value = null;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1}})
-    audioCtx = new (window.AudioContext || (window as typeof window & {
-      webkitAudioContext: typeof AudioContext
-    }).webkitAudioContext)()
-    await audioCtx.audioWorklet.addModule(createWorkletUrl())
-    const source = audioCtx.createMediaStreamSource(stream)
+    // 1) WebSocket öffnen
+    ws = new WebSocket(WS_URL);
+    ws.binaryType = 'arraybuffer';
+    await new Promise<void>((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error('WebSocket timeout')), 5000);
+      ws!.onopen = () => {
+        clearTimeout(to);
+        resolve();
+      };
+      ws!.onerror = () => {
+        clearTimeout(to);
+        reject(new Error('WebSocket error'));
+      };
+    });
+    ws.onmessage = (ev) => {
+      try {
+        console.log(ev);
+        const msg = JSON.parse(ev.data);
+        if (msg.error) {
+          error.value = `Server: ${msg.error}`;
+          return;
+        }
+        lastResult.value = { t: msg.t, p_clap: msg.p_clap, p_noise: msg.p_noise };
+      } catch (e) {
+        console.error(e);
+      }
+    };
+
+    // 2) Audio starten
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    audioCtx = new ((window as typeof window & { webkitAudioContext?: typeof AudioContext })
+      .AudioContext ||
+      (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    await audioCtx.audioWorklet.addModule(createWorkletUrl());
+    const source = audioCtx.createMediaStreamSource(stream);
 
     workletNode = new AudioWorkletNode(audioCtx, 'pcm16k-worklet', {
-      numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1,
-      processorOptions: {inputSampleRate: audioCtx.sampleRate, targetSampleRate: TARGET_SR, blockLen: SAMPLES_PER_BLOCK}
-    })
-    source.connect(workletNode)
+      numberOfInputs: 1,
+      numberOfOutputs: 0,
+      channelCount: 1,
+      processorOptions: {
+        inputSampleRate: audioCtx.sampleRate,
+        targetSampleRate: TARGET_SR,
+        blockLen: SAMPLES_PER_BLOCK,
+      },
+    });
+    source.connect(workletNode);
 
+    // 3) PCM-Blocks direkt zum Server schicken
     workletNode.port.onmessage = (ev: MessageEvent) => {
-      const {type, payload} = ev.data || {}
+      const { type, payload } = ev.data || {};
       if (type === 'block-int16') {
-        // payload ist ein ArrayBuffer mit Int16 PCM @ 16kHz, 1s => 32.000 Bytes
-        const int16 = new Int16Array(payload)
-        const wavBlob = pcmToWavBlob(int16, TARGET_SR, CHANNELS)
-        const filename = `seg_${String(seq).padStart(6, '0')}_${new Date().toISOString().replace(/[:.]/g, '-')}.wav`
-        queue.value.push({seq: seq++, wav: wavBlob, filename, createdAt: Date.now()})
-        pump()
+        const ab: ArrayBuffer = payload; // 32000 Bytes pro 1s Block
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(ab);
+          sent.value++;
+        }
       }
-    }
+    };
 
-    isRunning.value = true
-    sent.value = 0
-    startTs.value = performance.now()
-    elapsed.value = 0
+    isRunning.value = true;
+    sent.value = 0;
+    startTs.value = performance.now();
+    elapsed.value = 0;
     tick = window.setInterval(() => {
-      if (startTs.value) elapsed.value = performance.now() - startTs.value
-      pump()
-    }, 150)
+      if (startTs.value) elapsed.value = performance.now() - startTs.value;
+    }, 150);
   } catch (e: unknown) {
-    error.value = (e as Error)?.message || String((e as Error))
-    await stop()
+    error.value = (e as Error)?.message || String(e);
+    await stop();
   }
 }
 
 async function stop() {
   try {
-    workletNode?.disconnect()
+    workletNode?.disconnect();
   } catch (e) {
-    console.log(e)
+    console.error(e);
   }
-  workletNode = null
+  workletNode = null;
   try {
-    stream?.getTracks().forEach(t => t.stop())
+    stream?.getTracks().forEach((t) => t.stop());
   } catch (e) {
-    console.log(e)
+    console.error(e);
   }
-  stream = null
+  stream = null;
   try {
-    await audioCtx?.close()
+    await audioCtx?.close();
   } catch (e) {
-    console.log(e)
+    console.error(e);
   }
-  audioCtx = null
-  isRunning.value = false
+  audioCtx = null;
+  try {
+    ws?.close();
+  } catch (e) {
+    console.error(e);
+  }
+  ws = null;
+  isRunning.value = false;
   if (tick) {
     clearInterval(tick);
-    tick = null
+    tick = null;
   }
-  status.value = 'Beendet.'
+  status.value = 'Beendet.';
 }
 
-/** WAV-Erzeugung: Header + PCM-Daten (S16LE, mono, 16k) */
-function pcmToWavBlob(pcm: Int16Array, sampleRate: number, channels: number): Blob {
-  const byteRate = sampleRate * channels * BYTES_PER_SAMPLE
-  const blockAlign = channels * BYTES_PER_SAMPLE
-  const dataSize = pcm.length * BYTES_PER_SAMPLE
-  const buffer = new ArrayBuffer(44 + dataSize)
-  const view = new DataView(buffer)
-
-  // RIFF chunk descriptor
-  writeString(view, 0, 'RIFF')
-  view.setUint32(4, 36 + dataSize, true)   // ChunkSize
-  writeString(view, 8, 'WAVE')
-  // fmt subchunk
-  writeString(view, 12, 'fmt ')
-  view.setUint32(16, 16, true)             // Subchunk1Size (PCM)
-  view.setUint16(20, 1, true)              // AudioFormat (1=PCM)
-  view.setUint16(22, channels, true)       // NumChannels
-  view.setUint32(24, sampleRate, true)     // SampleRate
-  view.setUint32(28, byteRate, true)       // ByteRate
-  view.setUint16(32, blockAlign, true)     // BlockAlign
-  view.setUint16(34, 16, true)             // BitsPerSample
-  // data subchunk
-  writeString(view, 36, 'data')
-  view.setUint32(40, dataSize, true)
-
-  // PCM Daten anhängen (Little Endian)
-  let offset = 44
-  for (let i = 0; i < pcm.length; i++, offset += 2) {
-    view.setInt16(offset, (pcm[i] as number), true)
-  }
-  return new Blob([view], {type: 'audio/wav'})
-}
-
-function writeString(view: DataView, offset: number, str: string) {
-  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i))
-}
-
-/** Upload-Pipeline */
-function pump() {
-  while (inFlight < CONCURRENCY && queue.value.length) {
-    const item = queue.value.shift()!
-    uploadItem(item, 0).catch(() => {
-    })
-  }
-}
-
-const i18n = useI18n();
-
-async function uploadItem(item: Item, attempt: number): Promise<void> {
-  inFlight++
-  try {
-    const form = new FormData()
-    // Der Browser setzt Content-Type inkl. Boundary automatisch – NICHT selbst setzen!
-    form.append('file', item.wav, item.filename)
-    // Optional: zusätzliche Felder
-    form.append('seq', String(item.seq))
-    form.append('sample_rate', String(TARGET_SR))
-    form.append('channels', String(CHANNELS))
-    form.append('duration_ms', '1000')
-
-    const resp = await fetch(UPLOAD_URL, {
-      method: 'POST',
-      headers: {},
-      body: form
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`)
-    sent.value++
-  } catch (err: unknown) {
-    if (attempt + 1 < MAX_RETRY) {
-      const delay = 300 * Math.pow(2, attempt)
-      await new Promise(r => setTimeout(r, delay))
-      return uploadItem(item, attempt + 1)
-    } else {
-      error.value = `${i18n.t('audio-component.error')} (seq=${item.seq}): ${(err as Error)?.message || (err as Error)}`
-      // Optional: Retry später
-      // queue.value.unshift(item)
-    }
-  } finally {
-    inFlight--
-    pump()
-  }
-}
-
-/** Inline-AudioWorklet: 16k Resampling + 1s Framing + Int16 */
+// AudioWorklet unverändert: 16k Resampling + 1s Framing + Int16
 function createWorkletUrl(): string {
   const code = `
   class PCM16KProcessor extends AudioWorkletProcessor {
@@ -269,8 +232,8 @@ function createWorkletUrl(): string {
     }
   }
   registerProcessor('pcm16k-worklet', PCM16KProcessor)
-  `
-  const blob = new Blob([code], {type: 'application/javascript'})
-  return URL.createObjectURL(blob)
+  `;
+  const blob = new Blob([code], { type: 'application/javascript' });
+  return URL.createObjectURL(blob);
 }
 </script>
