@@ -52,7 +52,7 @@ const elapsedLabel = computed(() => {
 
 const TARGET_SR = 16000;
 const SAMPLES_PER_BLOCK = TARGET_SR * 1; // 1 s
-const WS_URL = 'ws://clap-recognition-api:8000/ws/stream';
+const WS_URL = import.meta.env.BACKEND_WS_URL || 'ws://clap-recognition-api:8000/ws/stream';
 
 let stream: MediaStream | null = null;
 let audioCtx: AudioContext | null = null;
